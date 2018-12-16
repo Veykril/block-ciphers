@@ -5,21 +5,49 @@ extern crate byte_tools;
 extern crate opaque_debug;
 
 use core::fmt;
+use core::marker::PhantomData;
 
-pub use block_cipher_trait::BlockCipher;
-use byte_tools::{read_u32_be, write_u32_be};
-use block_cipher_trait::InvalidKeyLength;
 use block_cipher_trait::generic_array::typenum::{U1, U56, U8};
 use block_cipher_trait::generic_array::GenericArray;
+pub use block_cipher_trait::BlockCipher;
+use block_cipher_trait::InvalidKeyLength;
 
 mod consts;
 
 type Block = GenericArray<u8, U8>;
+type BlowfishBE = Blowfish<BE>;
+type BlowfishLE = Blowfish<LE>;
+
+mod private {
+    trait Sealed {}
+    impl Sealed for super::BE {}
+    impl Sealed for super::LE {}
+}
+
+pub trait Endianess {
+    fn write_u32(dst: &mut [u8], n: u32);
+    fn read_u32(src: &[u8]) -> u32;
+}
+pub struct BE;
+impl Endianess for BE {
+    #[inline]
+    fn write_u32(dst: &mut [u8], n: u32) { byte_tools::write_u32_be(dst, n); }
+    #[inline]
+    fn read_u32(src: &[u8]) -> u32 { byte_tools::read_u32_be(src) }
+}
+pub struct LE;
+impl Endianess for LE {
+    #[inline]
+    fn write_u32(dst: &mut [u8], n: u32) { byte_tools::write_u32_le(dst, n); }
+    #[inline]
+    fn read_u32(src: &[u8]) -> u32 { byte_tools::read_u32_le(src) }
+}
 
 #[derive(Clone, Copy)]
-pub struct Blowfish {
+pub struct Blowfish<T: Endianess = BE> {
     s: [[u32; 256]; 4],
     p: [u32; 18],
+    _pd: PhantomData<T>,
 }
 
 fn next_u32_wrap(buf: &[u8], offset: &mut usize) -> u32 {
@@ -34,11 +62,12 @@ fn next_u32_wrap(buf: &[u8], offset: &mut usize) -> u32 {
     v
 }
 
-impl Blowfish {
-    fn init_state() -> Blowfish {
+impl<T: Endianess> Blowfish<T> {
+    fn init_state() -> Blowfish<T> {
         Blowfish {
             p: consts::P,
             s: consts::S,
+            _pd: PhantomData,
         }
     }
 
@@ -95,7 +124,7 @@ impl Blowfish {
     }
 }
 
-impl BlockCipher for Blowfish {
+impl<T: Endianess> BlockCipher for Blowfish<T> {
     type KeySize = U56;
     type BlockSize = U8;
     type ParBlocks = U1;
@@ -115,26 +144,26 @@ impl BlockCipher for Blowfish {
 
     #[inline]
     fn encrypt_block(&self, block: &mut Block) {
-        let l = read_u32_be(&block[..4]);
-        let r = read_u32_be(&block[4..]);
+        let l = T::read_u32(&block[..4]);
+        let r = T::read_u32(&block[4..]);
         let (l, r) = self.encrypt(l, r);
-        write_u32_be(&mut block[..4], l);
-        write_u32_be(&mut block[4..], r);
+        T::write_u32(&mut block[..4], l);
+        T::write_u32(&mut block[4..], r);
     }
 
     #[inline]
     fn decrypt_block(&self, block: &mut Block) {
-        let l = read_u32_be(&block[..4]);
-        let r = read_u32_be(&block[4..]);
+        let l = T::read_u32(&block[..4]);
+        let r = T::read_u32(&block[4..]);
         let (l, r) = self.decrypt(l, r);
-        write_u32_be(&mut block[..4], l);
-        write_u32_be(&mut block[4..], r);
+        T::write_u32(&mut block[..4], l);
+        T::write_u32(&mut block[4..], r);
     }
 }
 
 /// Bcrypt extension of blowfish
 #[cfg(feature = "bcrypt")]
-impl Blowfish {
+impl<T: Endianess> Blowfish<T> {
     pub fn salted_expand_key(&mut self, salt: &[u8], key: &[u8]) {
         let mut key_pos = 0;
         for i in 0..18 {
@@ -169,7 +198,7 @@ impl Blowfish {
         }
     }
 
-    pub fn bc_init_state() -> Blowfish { Blowfish::init_state() }
+    pub fn bc_init_state() -> Blowfish<T> { Blowfish::init_state() }
 
     pub fn bc_encrypt(&self, l: u32, r: u32) -> (u32, u32) {
         self.encrypt(l, r)
